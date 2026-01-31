@@ -1,9 +1,72 @@
-# Miscellaneous
+# ---- OS ----
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ---- IntelliJ IDEA ----
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+# IntelliJ HTTP Client / local run configs
+.httpRequests/
+runConfigurations/
+
+# ---- Maven ----
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+
+# ---- Gradle (in case it appears later) ----
+.gradle/
+build/
+
+# ---- Java/Kotlin ----
 *.class
-*.lock
+*.jar
+*.war
+*.ear
 *.log
-*.pyc
+hs_err_pid*
+replay_pid*
+
+# Kotlin compiler / Kapt
+.kotlin/
+kapt/
+kaptKotlin/
+kotlin-js-store/
+
+# ---- Spring Boot / app runtime ----
+logs/
+*.pid
+
+# ---- Environment / secrets (keep local only) ----
+.env
+.env.*
+*.local
+application-local.yml
+application-local.yaml
+application-local.properties
+
+# ---- Test reports / coverage ----
+/coverage/
+*.exec
+
+# ---- Temporary files ----
+*.tmp
 *.swp
+*.swo
+
+# Miscellaneous
+*.lock
+*.pyc
 .buildlog/
 .history
 
@@ -40,7 +103,6 @@ analysis_benchmark.json
 .packages
 .pub-preload-cache/
 .pub/
-build/
 flutter_*.png
 linked_*.ds
 unlinked.ds
@@ -48,7 +110,6 @@ unlinked_spec.ds
 
 # Android related
 **/android/**/gradle-wrapper.jar
-.gradle/
 **/android/captures/
 **/android/gradlew
 **/android/gradlew.bat
