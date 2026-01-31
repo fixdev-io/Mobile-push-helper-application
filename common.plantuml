@@ -1,0 +1,471 @@
+' =========================================================
+' Push App — 12 Critical Sequence Diagrams (PlantUML)
+' Generated from the provided summary text
+' =========================================================
+
+' ---------------------------------------------------------
+' 1) First App Launch (Anonymous User)
+' ---------------------------------------------------------
+@startuml 01_first_launch_anonymous
+title 1. Первый запуск приложения (Анонимный пользователь)
+
+autonumber
+actor User
+participant "KMP Client App" as App
+participant "Spring Boot Backend" as BE
+participant "Keycloak" as KC
+database "Database" as DB
+
+User -> App: Open app
+App -> App: Generate UUID (deviceId)
+App -> App: Save deviceId locally
+
+App -> BE: POST /api/devices/register (deviceId)
+BE -> DB: INSERT UserDevices(user_id=NULL, device_id=deviceId)
+BE -> BE: Generate anonymous session token
+BE --> App: 200 {token, quota:5, role:GUEST}
+
+App -> User: Render main screen
+@enduml
+
+
+' ---------------------------------------------------------
+' 2) Sign Up / Sign In via Google OAuth
+' ---------------------------------------------------------
+@startuml 02_google_oauth_registration
+title 2. Регистрация через Google OAuth
+
+autonumber
+actor User
+participant "KMP App" as App
+participant "Keycloak" as KC
+participant "Google OAuth" as Google
+participant "Spring Boot Backend" as BE
+database "DB" as DB
+participant "Push Token Service" as PTS
+
+User -> App: Tap "Sign in with Google"
+App -> KC: Redirect to OAuth endpoint
+KC -> Google: Redirect to Google OAuth
+
+User -> Google: Login + consent
+Google --> KC: Authorization code
+KC -> Google: Exchange code for access token
+KC -> Google: Get UserInfo
+Google --> KC: UserInfo(email, sub, ...)
+
+KC -> KC: Check user existence by email
+alt user not exists
+  KC -> KC: Create user in Keycloak
+end
+KC --> App: Redirect back with JWT (access token)
+
+App -> BE: POST /api/auth/complete (JWT)
+BE -> KC: Validate JWT
+KC --> BE: JWT valid + userId
+
+BE -> DB: Link Device -> User (UserDevices.user_id=userId)
+BE -> PTS: Register push token (device/platform/token)
+PTS --> BE: ok
+BE --> App: 200 {userId, role:USER, quota:100}
+@enduml
+
+
+' ---------------------------------------------------------
+' 3) Account Linking (Guest -> Authorized)
+' ---------------------------------------------------------
+@startuml 03_account_linking_guest_to_user
+title 3. Account Linking (анонимный → авторизованный)
+
+autonumber
+actor User
+participant "KMP App" as App
+participant "Spring Boot Backend" as BE
+participant "Keycloak" as KC
+database "Database" as DB
+
+note over User,App
+Guest deviceId="dev-123"\nSent 3 push messages\nThen signs in via Google -> userId="user-456"
+end note
+
+App -> BE: POST /api/account/link {deviceId, userId, preserveData:true} + JWT
+BE -> KC: Validate JWT
+KC --> BE: valid
+
+BE -> DB: BEGIN TRANSACTION
+BE -> DB: UPDATE UserDevices SET user_id='user-456' WHERE device_id='dev-123'
+BE -> DB: UPDATE PushMessages SET user_id='user-456' WHERE device_id='dev-123'
+BE -> DB: UPDATE QuotaUsage SET user_id='user-456', quota_type='USER' WHERE device_id='dev-123' OR user_id IS NULL
+BE -> DB: UPDATE Users SET role='USER' WHERE id='user-456'
+BE -> DB: COMMIT
+
+BE --> App: 200 {status:"linked", newQuota:100, migratedMessages:3}
+@enduml
+
+
+' ---------------------------------------------------------
+' 4) Send Push Notification
+' ---------------------------------------------------------
+@startuml 04_send_push
+title 4. Отправка Push-уведомления
+
+autonumber
+actor User
+participant "KMP App" as App
+participant "Spring Boot Backend" as BE
+participant "Keycloak" as KC
+database "DB" as DB
+participant "FCM/APNs" as PushGW
+
+User -> App: Create message (title/body)
+User -> App: Click "Send"
+App -> BE: POST /api/push/send {title, body, targetDeviceId} + JWT
+
+BE -> KC: Validate JWT
+KC --> BE: valid (userId, role)
+
+BE -> DB: SELECT quota_used, quota_limit FROM QuotaUsage WHERE user_id=userId
+alt quota_used < quota_limit
+  BE -> DB: INSERT INTO PushMessages(...)
+  BE -> DB: SELECT push_token, platform FROM UserDevices WHERE device_id=targetDeviceId
+  BE -> PushGW: Send push(payload, token, platform)
+  PushGW --> BE: platform_message_id
+  BE -> DB: UPDATE PushMessages SET status='sent', platform_message_id=...
+  BE -> DB: UPDATE QuotaUsage SET quota_used=quota_used+1
+  BE --> App: 200 {success:true, messageId, quotaRemaining}
+  PushGW -> User: Deliver notification
+else QUOTA EXCEEDED
+  BE --> App: 429 {error:"quota_exceeded"}
+end
+@enduml
+
+
+' ---------------------------------------------------------
+' 5) Cross-Platform Sync (iOS + Web)
+' ---------------------------------------------------------
+@startuml 05_cross_platform_sync
+title 5. Кроссплатформенная синхронизация
+
+autonumber
+actor User
+participant "iOS App" as iOS
+participant "Web App" as Web
+participant "Spring Boot Backend" as BE
+participant "Keycloak" as KC
+database "Database" as DB
+
+note over User,iOS
+User already signed in on iOS (device-1)
+end note
+
+User -> Web: Open Web App, click "Sign in with Google"
+Web -> KC: OAuth flow
+KC --> Web: JWT + userId
+
+Web -> BE: POST /api/devices/register {deviceId:"device-2", platform:"Web"} + JWT
+BE -> KC: Validate JWT
+KC --> BE: valid
+BE -> DB: INSERT INTO UserDevices(user_id=userId, device_id="device-2", platform="Web")
+
+Web -> BE: POST /api/user/sync + JWT
+BE -> DB: SELECT * FROM UserDevices WHERE user_id=userId
+BE -> DB: SELECT * FROM PushMessages WHERE user_id=userId ORDER BY created_at DESC
+BE -> DB: SELECT * FROM QuotaUsage WHERE user_id=userId
+BE --> Web: 200 {devices:[...], pushHistory:[...], quota:{...}}
+
+Web -> User: Render synchronized data
+@enduml
+
+
+' ---------------------------------------------------------
+' 6) Apple Sign-In (iOS/macOS)
+' ---------------------------------------------------------
+@startuml 06_apple_sign_in
+title 6. Apple Sign-In (iOS/macOS)
+
+autonumber
+actor User
+participant "iOS App" as App
+participant "Apple OAuth" as Apple
+participant "Spring Boot Backend" as BE
+participant "Keycloak" as KC
+database "Database" as DB
+
+User -> App: Tap "Sign in with Apple"
+App -> App: Create ASAuthorizationAppleIDRequest(scopes: fullName,email)
+App -> Apple: Present Apple Sign-In UI
+User -> Apple: Face/Touch ID authenticate
+Apple --> App: credentials {identityToken, authorizationCode, email?, fullName?}
+
+App -> App: Store fullName locally (first time only)
+App -> BE: POST /api/auth/apple {identityToken, authorizationCode, fullName, deviceId}
+
+BE -> BE: Validate Apple JWT (identityToken)
+BE -> Apple: Exchange authorizationCode -> refresh token (server-side)
+Apple --> BE: tokens
+BE -> BE: Decode id_token (sub/email)
+
+BE -> KC: Find/create user (by Apple sub or email)
+alt user not exists
+  KC -> KC: Create user
+  BE -> DB: INSERT Users, federated_identities
+end
+
+KC --> BE: JWT for app realm
+BE -> DB: Link device to user (UserDevices.user_id=userId)
+BE --> App: 200 {token, userId, role:USER, quota:100}
+@enduml
+
+
+' ---------------------------------------------------------
+' 7) Token Refresh Flow (Access expired)
+' ---------------------------------------------------------
+@startuml 07_token_refresh_flow
+title 7. Token Refresh Flow
+
+autonumber
+actor User
+participant "KMP App" as App
+participant "Spring Boot Backend" as BE
+participant "Keycloak" as KC
+database "Database" as DB
+
+User -> App: Trigger action (send push)
+App -> BE: POST /api/push/send + expired access token
+BE -> KC: Validate JWT
+KC --> BE: invalid (token_expired)
+BE --> App: 401 Unauthorized
+
+App -> App: Detect 401
+App -> App: Load refresh token (secure storage)
+App -> KC: POST /protocol/openid-connect/token\n{grant_type=refresh_token, refresh_token=...}
+
+KC -> DB: Check refresh token not revoked
+alt refresh token valid
+  KC -> KC: Generate new access token
+  KC -> KC: Generate new refresh token (rotation)
+  KC -> DB: Revoke old refresh token
+  KC --> App: 200 {access_token, refresh_token, expires_in:1800}
+  App -> App: Save new tokens
+  App -> BE: Retry original request with new access token
+  BE -> KC: Validate JWT
+  KC --> BE: valid
+  BE --> App: 200 Success
+else revoked/invalid
+  KC --> App: 400/401 invalid_grant
+  App -> User: Force re-login
+end
+@enduml
+
+
+' ---------------------------------------------------------
+' 8) Quota Exceeded Error Handling
+' ---------------------------------------------------------
+@startuml 08_quota_exceeded
+title 8. Quota Exceeded Error Handling
+
+autonumber
+actor User
+participant "KMP App" as App
+participant "Spring Boot Backend" as BE
+participant "Keycloak" as KC
+database "Database" as DB
+
+User -> App: Click "Send push"
+App -> BE: POST /api/push/send + JWT
+
+BE -> KC: Validate JWT
+KC --> BE: valid (userId, role=USER)
+
+BE -> DB: SELECT quota_used, quota_limit FROM QuotaUsage WHERE user_id=userId
+alt quota_used >= quota_limit
+  BE -> BE: Calculate reset time (midnight UTC)
+  BE -> DB: INSERT audit/quota_event (quota_exceeded)
+  BE --> App: 429 {error:"quota_exceeded", quotaUsed, quotaLimit,\nresetAt:"2026-02-01T00:00:00Z", upgradeUrl:"/premium"}
+  App -> User: Show dialog + "Upgrade"
+  User -> App: Tap "Upgrade to Premium"
+  App -> User: Navigate to premium page
+else quota ok
+  BE --> App: 200 continue normal send
+end
+@enduml
+
+
+' ---------------------------------------------------------
+' 9) Multi-Device Token Revocation (Sign out all devices)
+' ---------------------------------------------------------
+@startuml 09_multi_device_token_revocation
+title 9. Multi-Device Token Revocation
+
+autonumber
+actor User
+participant "Device 1 (iOS)" as D1
+participant "Device 2 (Web)" as D2
+participant "Spring Boot Backend" as BE
+participant "Keycloak" as KC
+database "Database" as DB
+participant "WS/FCM Events" as EVT
+
+User -> D1: Tap "Sign Out All Devices"
+D1 -> BE: POST /api/auth/signout-all + JWT
+BE -> KC: Validate JWT
+KC --> BE: valid (userId)
+
+BE -> KC: Get all sessions for user
+KC --> BE: sessions list
+BE -> KC: Revoke all refresh tokens (realm)
+KC --> BE: ok
+
+BE -> DB: UPDATE RefreshTokens SET revoked=true WHERE user_id=userId
+BE -> DB: DELETE FROM UserDevices WHERE user_id=userId
+
+BE -> EVT: Broadcast logout event to all user devices
+EVT -> D1: Logout event
+EVT -> D2: Logout event
+
+D1 -> D1: Clear local tokens + data
+D2 -> D2: Clear local tokens + data
+D1 -> User: Navigate to login
+D2 -> User: Navigate to login
+@enduml
+
+
+' ---------------------------------------------------------
+' 10) Rate Limiting & Retry Logic
+' ---------------------------------------------------------
+@startuml 10_rate_limiting_and_retry
+title 10. Rate Limiting & Retry Logic
+
+autonumber
+actor User
+participant "KMP App" as App
+participant "API Gateway" as GW
+database "Redis" as Redis
+participant "Backend" as BE
+database "DB" as DB
+
+note over User,App
+Limit: 10 requests / minute\nUser sends 11 rapid requests
+end note
+
+loop Requests 1..10
+  App -> GW: Request /api/push/send
+  GW -> Redis: INCR rate_limit:user-456:push
+  GW -> Redis: TTL rate_limit:user-456:push?
+  alt first request in window
+    GW -> Redis: EXPIRE key 60s
+  end
+  alt count <= 10
+    GW -> BE: Forward request
+    BE -> DB: Process normally
+    BE --> GW: 200 OK
+    GW --> App: 200 OK
+  end
+end
+
+App -> GW: Request #11 /api/push/send
+GW -> Redis: INCR rate_limit:user-456:push (count=11)
+alt count > 10
+  GW -> Redis: TTL key (e.g. 45s)
+  GW --> App: 429 {error:"rate_limit_exceeded", retryAfter:45, limit:10, remaining:0}\nHeaders: Retry-After:45
+  App -> App: Parse Retry-After
+  App -> User: Toast "Too many requests. Wait 45s"
+  App -> App: Queue request for retry
+  App -> App: Wait 45s
+  App -> GW: Retry request
+  GW -> Redis: INCR (new window) count=1
+  GW -> BE: Forward
+  BE --> GW: 200 OK
+  GW --> App: 200 OK
+end
+@enduml
+
+
+' ---------------------------------------------------------
+' 11) Offline Mode & Sync (SQLDelight)
+' ---------------------------------------------------------
+@startuml 11_offline_mode_and_sync
+title 11. Offline Mode & Sync
+
+autonumber
+actor User
+participant "KMP App" as App
+database "Local DB (SQLDelight)" as LDB
+participant "Backend" as BE
+database "Server DB" as SDB
+
+== Offline create ==
+User -> App: Create push message
+App -> App: Check network status = OFFLINE
+App -> LDB: INSERT PendingPushes(id,title,body,status='pending',created_at)
+App -> User: Snackbar "Saved. Will send when online"
+
+loop Create 3 more messages
+  User -> App: Create push message
+  App -> LDB: INSERT PendingPushes(... status='pending')
+end
+
+== Network restored ==
+App -> App: Network change event = ONLINE
+App -> LDB: SELECT * FROM PendingPushes WHERE status='pending'
+LDB --> App: 4 rows
+App -> User: "Syncing 4 messages..."
+
+loop for each pending message
+  App -> BE: POST /api/push/send {message}
+  BE -> SDB: Persist + send flow
+  BE --> App: 200 success
+  App -> LDB: UPDATE PendingPushes SET status='synced', synced_at=NOW()
+end
+
+App -> User: "All messages sent ✓"
+App -> LDB: DELETE FROM PendingPushes\nWHERE status='synced' AND synced_at < NOW()-7d
+@enduml
+
+
+' ---------------------------------------------------------
+' 12) Account Deletion (GDPR Compliance)
+' ---------------------------------------------------------
+@startuml 12_account_deletion_gdpr
+title 12. Account Deletion (GDPR Compliance)
+
+autonumber
+actor User
+participant "KMP App" as App
+participant "Spring Boot Backend" as BE
+participant "Keycloak" as KC
+database "Database" as DB
+participant "FCM/APNs" as PushGW
+
+User -> App: Settings -> "Delete Account"
+App -> User: Confirm dialog ("Type DELETE")
+User -> App: Type "DELETE"
+App -> BE: POST /api/account/delete + JWT
+
+BE -> KC: Validate JWT
+KC --> BE: valid (userId)
+
+BE -> DB: BEGIN TRANSACTION
+BE -> DB: SELECT user devices (deviceId, pushToken, platform)
+DB --> BE: [{device-1, token1},{device-2, token2}]
+
+BE -> PushGW: Unregister tokens (token1, token2)
+PushGW --> BE: ok
+
+BE -> DB: DELETE FROM push_messages WHERE user_id=userId
+BE -> DB: DELETE FROM quota_usage WHERE user_id=userId
+BE -> DB: DELETE FROM user_devices WHERE user_id=userId
+BE -> DB: DELETE FROM analytics WHERE user_id=userId
+BE -> DB: COMMIT
+
+BE -> KC: DELETE user from realm (admin API)
+KC --> BE: ok
+BE -> KC: Revoke all tokens
+KC --> BE: ok
+
+BE -> DB: INSERT audit_log (anonymized deletion event)
+BE --> App: 200 {success:true, deletedAt:"2026-01-31T10:30:00Z"}
+
+App -> App: Clear local data
+App -> User: Navigate to welcome screen
+@enduml
